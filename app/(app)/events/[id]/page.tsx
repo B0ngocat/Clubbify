@@ -4,6 +4,7 @@ import { requireSession } from "@/lib/auth/session";
 import { scopedDb } from "@/lib/db/scoped";
 import { can } from "@/lib/auth/authorize";
 import { formatDateTime } from "@/lib/utils";
+import { getActiveCheckIn } from "@/lib/attendance/checkInCode";
 import { rsvpToEvent, cancelRsvp } from "../actions";
 
 export default async function EventDetailPage({
@@ -29,6 +30,10 @@ export default async function EventDetailPage({
 
   if (!event) notFound();
 
+  const activeCheckIn = await getActiveCheckIn(event.id);
+  const myAttendance = await prisma.eventAttendance.findUnique({
+    where: { eventId_userId: { eventId: event.id, userId: ctx.userId } },
+  });
   const myRsvp = event.rsvps.find((r) => r.userId === ctx.userId);
   const isOfficerHere = can(
     "event.update",
@@ -62,6 +67,26 @@ export default async function EventDetailPage({
       <div className="card p-5">
         <p className="whitespace-pre-wrap text-slate-700">{event.description}</p>
       </div>
+
+      {activeCheckIn ? (
+        <div className="card p-5 border-green-300 bg-green-50">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <div className="font-medium text-green-900">Check-in is open</div>
+              <div className="mt-1 text-sm text-green-800">
+                {myAttendance?.attended
+                  ? "You're already checked in."
+                  : "Tap below to mark yourself here."}
+              </div>
+            </div>
+            {!myAttendance?.attended ? (
+              <Link href={`/events/${event.id}/checkin`} className="btn-primary">
+                I'm here
+              </Link>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
 
       <div className="card p-5">
         <div className="flex items-center justify-between">

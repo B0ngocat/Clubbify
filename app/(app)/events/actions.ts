@@ -5,6 +5,8 @@ import { requireSession } from "@/lib/auth/session";
 import { authorize } from "@/lib/auth/authorize";
 import { scopedDb } from "@/lib/db/scoped";
 import { rsvpInputSchema, eventIdSchema } from "@/lib/validation/event";
+import { awardPoints } from "@/lib/points/award";
+import { recomputeEngagementForUser } from "@/lib/engagement/recompute";
 
 export async function rsvpToEvent(formData: FormData) {
   const ctx = await requireSession();
@@ -27,8 +29,20 @@ export async function rsvpToEvent(formData: FormData) {
     update: { status },
   });
 
+  if (status === "GOING") {
+    await awardPoints({
+      orgId,
+      clubId: event.clubId,
+      userId: ctx.userId,
+      source: "EVENT_RSVP",
+      sourceId: event.id,
+    });
+  }
+  await recomputeEngagementForUser(ctx.userId);
+
   revalidatePath(`/events/${eventId}`);
   revalidatePath("/events");
+  revalidatePath("/me");
 }
 
 export async function cancelRsvp(formData: FormData) {
@@ -43,6 +57,11 @@ export async function cancelRsvp(formData: FormData) {
 
   await prisma.eventRSVP.delete({ where: { id: existing.id } });
 
+  // Award stays as a historical record. Recompute so the decay/engagement
+  // picks up the change if needed.
+  await recomputeEngagementForUser(ctx.userId);
+
   revalidatePath(`/events/${eventId}`);
   revalidatePath("/events");
+  revalidatePath("/me");
 }

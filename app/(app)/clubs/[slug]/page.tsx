@@ -3,7 +3,12 @@ import { notFound } from "next/navigation";
 import { requireSession } from "@/lib/auth/session";
 import { scopedDb } from "@/lib/db/scoped";
 import { formatDateTime } from "@/lib/utils";
+import {
+  totalForUserInClub,
+  deriveThresholdProgress,
+} from "@/lib/points/totals";
 import { joinClub, leaveClub } from "../actions";
+import { markAnnouncementRead } from "@/app/(app)/announcements/actions";
 
 export default async function ClubDetailPage({
   params,
@@ -12,7 +17,7 @@ export default async function ClubDetailPage({
 }) {
   const { slug } = await params;
   const ctx = await requireSession();
-  const { prisma, orgWhere } = scopedDb(ctx);
+  const { prisma, orgWhere, orgId } = scopedDb(ctx);
 
   const club = await prisma.club.findFirst({
     where: { ...orgWhere, slug },
@@ -29,6 +34,17 @@ export default async function ClubDetailPage({
       },
       pointRules: true,
       pointThresholds: { orderBy: { points: "asc" } },
+      announcements: {
+        orderBy: { publishedAt: "desc" },
+        take: 10,
+        include: {
+          author: { select: { name: true, email: true } },
+          reads: {
+            where: { userId: ctx.userId },
+            select: { announcementId: true },
+          },
+        },
+      },
     },
   });
 
@@ -37,6 +53,13 @@ export default async function ClubDetailPage({
   const joined = club.memberships.length > 0;
   const isOfficerHere = club.memberships.some((m) => m.isOfficer);
   const pointsEnabled = club.pointRules.length > 0;
+
+  const myTotal = pointsEnabled
+    ? await totalForUserInClub(orgId, club.id, ctx.userId)
+    : 0;
+  const progress = pointsEnabled
+    ? deriveThresholdProgress(myTotal, club.pointThresholds)
+    : null;
 
   return (
     <div className="space-y-8">
@@ -80,6 +103,82 @@ export default async function ClubDetailPage({
         </div>
       </div>
 
+      {pointsEnabled && joined ? (
+        <section className="card p-5">
+          <div className="flex items-center justify-between">
+            <div className="font-medium">Your points</div>
+            <div className="text-2xl font-bold">{myTotal}</div>
+          </div>
+          {progress?.next ? (
+            <div className="mt-3">
+              <div className="flex items-center justify-between text-sm text-slate-600">
+                <span>{progress.next.label}</span>
+                <span>
+                  {progress.next.remaining} pts to go
+                </span>
+              </div>
+              <div className="mt-1 h-2 overflow-hidden rounded-full bg-slate-100">
+                <div
+                  className="h-full bg-brand-500"
+                  style={{
+                    width: `${Math.min(100, (myTotal / progress.next.points) * 100)}%`,
+                  }}
+                />
+              </div>
+            </div>
+          ) : progress?.achieved.length ? (
+            <div className="mt-2 text-sm text-green-700">
+              All thresholds achieved: {progress.achieved.map((a) => a.label).join(", ")}.
+            </div>
+          ) : null}
+          <div className="mt-4 grid gap-1 text-sm text-slate-600">
+            {club.pointRules.map((r) => (
+              <div key={r.id}>
+                +{r.points} pts · {formatSource(r.source)}
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      <section>
+        <h2 className="text-lg font-semibold">Announcements</h2>
+        {club.announcements.length === 0 ? (
+          <div className="mt-2 text-sm text-slate-500">No announcements yet.</div>
+        ) : (
+          <ul className="mt-3 space-y-3">
+            {club.announcements.map((a) => {
+              const alreadyRead = a.reads.length > 0;
+              return (
+                <li key={a.id} className="card p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="font-medium">{a.title}</div>
+                      <div className="mt-0.5 text-xs text-slate-500">
+                        {formatDateTime(a.publishedAt)} · {a.author.name ?? a.author.email}
+                      </div>
+                    </div>
+                    {alreadyRead ? (
+                      <span className="badge bg-slate-100 text-slate-600">Read</span>
+                    ) : (
+                      <form action={markAnnouncementRead}>
+                        <input type="hidden" name="announcementId" value={a.id} />
+                        <button type="submit" className="btn-secondary text-sm">
+                          Mark read
+                        </button>
+                      </form>
+                    )}
+                  </div>
+                  <p className="mt-2 text-sm text-slate-700 whitespace-pre-wrap">
+                    {a.body}
+                  </p>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </section>
+
       <section>
         <h2 className="text-lg font-semibold">Upcoming events</h2>
         {club.events.length === 0 ? (
@@ -100,35 +199,6 @@ export default async function ClubDetailPage({
           </ul>
         )}
       </section>
-
-      {pointsEnabled ? (
-        <section>
-          <h2 className="text-lg font-semibold">Points</h2>
-          <p className="mt-1 text-sm text-slate-600">
-            This club tracks participation with a points system.
-          </p>
-          <div className="mt-3 card p-4">
-            <div className="text-sm font-medium">How points are earned</div>
-            <ul className="mt-2 space-y-1 text-sm text-slate-700">
-              {club.pointRules.map((r) => (
-                <li key={r.id}>
-                  {r.points} pts · {formatSource(r.source)}
-                </li>
-              ))}
-            </ul>
-            {club.pointThresholds.length > 0 ? (
-              <>
-                <div className="mt-4 text-sm font-medium">Thresholds</div>
-                <ul className="mt-2 space-y-1 text-sm text-slate-700">
-                  {club.pointThresholds.map((t) => (
-                    <li key={t.id}>{t.label} — {t.points} pts</li>
-                  ))}
-                </ul>
-              </>
-            ) : null}
-          </div>
-        </section>
-      ) : null}
     </div>
   );
 }
@@ -142,7 +212,7 @@ function formatSource(source: string): string {
     case "OFFICER_ROLE":
       return "Being an officer";
     case "ANNOUNCEMENT_READ":
-      return "Reading announcements";
+      return "Reading an announcement";
     case "CUSTOM":
       return "Custom activity";
     case "MANUAL":
