@@ -1,0 +1,426 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------- Tenancy ----------
+
+model Organization {
+  id                   String   @id @default(cuid())
+  slug                 String   @unique
+  name                 String
+  emailDomainAllowlist String[] @default([])
+  timezone             String   @default("America/Los_Angeles")
+  settings             Json     @default("{}")
+  createdAt            DateTime @default(now())
+
+  users            User[]
+  memberships      Membership[]
+  clubs            Club[]
+  clubMemberships  ClubMembership[]
+  events           Event[]
+  rsvps            EventRSVP[]
+  attendances      EventAttendance[]
+  announcements    Announcement[]
+  announcementReads AnnouncementRead[]
+  engagementScores StudentEngagementScore[]
+  advisorAssignments AdvisorAssignment[]
+  interventions    Intervention[]
+  auditLogs        AuditLog[]
+  pointRules       ClubPointRule[]
+  pointThresholds  ClubPointThreshold[]
+  pointAwards      ClubPointAward[]
+  checkInCodes     EventCheckInCode[]
+}
+
+// ---------- Identity ----------
+
+enum Role {
+  STUDENT
+  OFFICER
+  ADVISOR
+  ADMIN
+}
+
+model User {
+  id        String   @id @default(cuid())
+  orgId     String
+  email     String
+  name      String?
+  image     String?
+  googleSub String?  @unique
+  gradYear  Int?
+  createdAt DateTime @default(now())
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  memberships       Membership[]
+  clubMemberships   ClubMembership[]
+  rsvps             EventRSVP[]
+  attendances       EventAttendance[]
+  announcementsWritten Announcement[] @relation("AnnouncementAuthor")
+  announcementReads  AnnouncementRead[]
+  engagementScore   StudentEngagementScore?
+  advisorAssignments AdvisorAssignment[] @relation("Advisor")
+  studentAssignments AdvisorAssignment[] @relation("Student")
+  interventionsGiven Intervention[] @relation("Advisor")
+  interventionsOnMe  Intervention[] @relation("Student")
+  pointAwards        ClubPointAward[]   @relation("Recipient")
+  pointAwardsGiven   ClubPointAward[]   @relation("Awarder")
+  attendanceMarked   EventAttendance[]  @relation("MarkedBy")
+  auditLogs          AuditLog[]
+
+  // Auth.js adapter tables
+  accounts Account[]
+  sessions Session[]
+
+  @@unique([orgId, email])
+  @@index([orgId])
+}
+
+model Membership {
+  orgId  String
+  userId String
+  role   Role
+
+  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, role])
+  @@index([orgId, role])
+}
+
+// ---------- Clubs ----------
+
+model Club {
+  id          String   @id @default(cuid())
+  orgId       String
+  slug        String
+  name        String
+  description String
+  category    String?
+  coverImage  String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  org            Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  memberships    ClubMembership[]
+  events         Event[]
+  announcements  Announcement[]
+  pointRules     ClubPointRule[]
+  pointThresholds ClubPointThreshold[]
+  pointAwards    ClubPointAward[]
+
+  @@unique([orgId, slug])
+  @@index([orgId, isActive])
+}
+
+model ClubMembership {
+  id        String   @id @default(cuid())
+  orgId     String
+  clubId    String
+  userId    String
+  isOfficer Boolean  @default(false)
+  joinedAt  DateTime @default(now())
+
+  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  club Club         @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  user User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([clubId, userId])
+  @@index([userId])
+  @@index([orgId, clubId, isOfficer])
+}
+
+// ---------- Events & RSVP ----------
+
+model Event {
+  id            String    @id @default(cuid())
+  orgId         String
+  clubId        String
+  title         String
+  description   String
+  location      String?
+  startsAt      DateTime
+  endsAt        DateTime
+  capacity      Int?
+  googleEventId String?
+  createdAt     DateTime  @default(now())
+
+  org           Organization       @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  club          Club               @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  rsvps         EventRSVP[]
+  attendances   EventAttendance[]
+  checkInCode   EventCheckInCode?
+
+  @@index([orgId, startsAt])
+  @@index([clubId, startsAt])
+}
+
+enum RSVPStatus {
+  GOING
+  MAYBE
+  DECLINED
+}
+
+model EventRSVP {
+  id        String     @id @default(cuid())
+  orgId     String
+  eventId   String
+  userId    String
+  status    RSVPStatus @default(GOING)
+  createdAt DateTime   @default(now())
+
+  org   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  event Event        @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  user  User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId, userId])
+  @@index([userId])
+}
+
+model EventAttendance {
+  id            String   @id @default(cuid())
+  orgId         String
+  eventId       String
+  userId        String
+  attended      Boolean  @default(true)
+  checkedInAt   DateTime @default(now())
+  markedByUserId String
+
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  event     Event        @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  markedBy  User         @relation("MarkedBy", fields: [markedByUserId], references: [id])
+
+  @@unique([eventId, userId])
+  @@index([userId])
+}
+
+model EventCheckInCode {
+  eventId   String   @id
+  orgId     String
+  code      String
+  rotatesAt DateTime
+  openUntil DateTime
+
+  org   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  event Event        @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, openUntil])
+}
+
+// ---------- Announcements ----------
+
+model Announcement {
+  id          String   @id @default(cuid())
+  orgId       String
+  clubId      String
+  authorId    String
+  title       String
+  body        String
+  publishedAt DateTime @default(now())
+
+  org    Organization       @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  club   Club               @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  author User               @relation("AnnouncementAuthor", fields: [authorId], references: [id])
+  reads  AnnouncementRead[]
+
+  @@index([clubId, publishedAt])
+}
+
+model AnnouncementRead {
+  announcementId String
+  userId         String
+  orgId          String
+  readAt         DateTime @default(now())
+
+  org          Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  announcement Announcement @relation(fields: [announcementId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([announcementId, userId])
+  @@index([userId])
+}
+
+// ---------- Engagement ----------
+
+enum EngagementBand {
+  HEALTHY
+  WATCH
+  AT_RISK
+}
+
+model StudentEngagementScore {
+  userId     String         @id
+  orgId      String
+  score      Float          @default(0)
+  band       EngagementBand @default(HEALTHY)
+  components Json           @default("{}")
+  trend7d    Float          @default(0)
+  computedAt DateTime       @default(now())
+
+  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, band, score])
+}
+
+model AdvisorAssignment {
+  id              String   @id @default(cuid())
+  orgId           String
+  advisorUserId   String
+  studentUserId   String
+  createdAt       DateTime @default(now())
+
+  org     Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  advisor User         @relation("Advisor", fields: [advisorUserId], references: [id], onDelete: Cascade)
+  student User         @relation("Student", fields: [studentUserId], references: [id], onDelete: Cascade)
+
+  @@unique([advisorUserId, studentUserId])
+  @@index([studentUserId])
+}
+
+enum InterventionType {
+  CHECK_IN
+  EMAIL
+  MEETING
+  REFERRAL
+}
+
+model Intervention {
+  id             String           @id @default(cuid())
+  orgId          String
+  advisorUserId  String
+  studentUserId  String
+  type           InterventionType
+  note           String
+  occurredAt     DateTime         @default(now())
+
+  org     Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  advisor User         @relation("Advisor", fields: [advisorUserId], references: [id], onDelete: Cascade)
+  student User         @relation("Student", fields: [studentUserId], references: [id], onDelete: Cascade)
+
+  @@index([studentUserId, occurredAt])
+}
+
+// ---------- Points ----------
+
+enum PointSource {
+  EVENT_ATTENDANCE
+  EVENT_RSVP
+  OFFICER_ROLE
+  ANNOUNCEMENT_READ
+  CUSTOM
+  MANUAL
+}
+
+model ClubPointRule {
+  id            String      @id @default(cuid())
+  orgId         String
+  clubId        String
+  source        PointSource
+  points        Int
+  eventCategory String?
+  notes         String?
+  createdAt     DateTime    @default(now())
+
+  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  club Club         @relation(fields: [clubId], references: [id], onDelete: Cascade)
+
+  @@index([clubId, source])
+}
+
+model ClubPointThreshold {
+  id     String @id @default(cuid())
+  orgId  String
+  clubId String
+  label  String
+  points Int
+  order  Int    @default(0)
+
+  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  club Club         @relation(fields: [clubId], references: [id], onDelete: Cascade)
+
+  @@index([clubId, points])
+}
+
+model ClubPointAward {
+  id              String      @id @default(cuid())
+  orgId           String
+  clubId          String
+  userId          String
+  points          Int
+  source          PointSource
+  sourceId        String?
+  reason          String?
+  awardedByUserId String?
+  awardedAt       DateTime    @default(now())
+
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  club      Club         @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  user      User         @relation("Recipient", fields: [userId], references: [id], onDelete: Cascade)
+  awardedBy User?        @relation("Awarder", fields: [awardedByUserId], references: [id])
+
+  @@unique([clubId, userId, source, sourceId])
+  @@index([clubId, userId])
+}
+
+// ---------- Audit ----------
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  orgId       String
+  actorUserId String?
+  action      String
+  entityType  String
+  entityId    String
+  diff        Json     @default("{}")
+  createdAt   DateTime @default(now())
+
+  org   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  actor User?        @relation(fields: [actorUserId], references: [id])
+
+  @@index([orgId, createdAt])
+}
+
+// ---------- Auth.js adapter tables ----------
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
