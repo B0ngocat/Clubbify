@@ -251,6 +251,84 @@ async function main() {
     }
   }
 
+  // Historical attendance on past events: students get an attendance-probability
+  // shaped by their index so the engagement distribution includes healthy, watch,
+  // and at-risk bands.
+  const shape = (i: number): number => {
+    if (i < 5) return 0.1; // low-engagement cohort -> likely AT_RISK
+    if (i < 15) return 0.45; // WATCH-ish
+    return 0.85; // HEALTHY
+  };
+  const pastEvents = [...chessEvents, ...roboEvents, ...debateEvents].filter(
+    (e) => e.startsAt < now,
+  );
+  for (const e of pastEvents) {
+    const members = await prisma.clubMembership.findMany({
+      where: { clubId: e.clubId },
+      select: { userId: true },
+    });
+    for (const m of members) {
+      const studentIdx = students.findIndex((s) => s.id === m.userId);
+      const prob = studentIdx >= 0 ? shape(studentIdx) : 0.5;
+      if (Math.random() < prob) {
+        const officer = [officerA, officerB, officerC].find(() => true)!;
+        await prisma.eventAttendance.upsert({
+          where: { eventId_userId: { eventId: e.id, userId: m.userId } },
+          create: {
+            orgId: org.id,
+            eventId: e.id,
+            userId: m.userId,
+            attended: true,
+            markedByUserId: officer.id,
+            checkedInAt: e.startsAt,
+          },
+          update: {},
+        });
+        // Record a MANUAL-independent award matching the attendance rule.
+        const rule = await prisma.clubPointRule.findFirst({
+          where: { clubId: e.clubId, source: "EVENT_ATTENDANCE" },
+        });
+        if (rule) {
+          await prisma.clubPointAward
+            .create({
+              data: {
+                orgId: org.id,
+                clubId: e.clubId,
+                userId: m.userId,
+                source: "EVENT_ATTENDANCE",
+                sourceId: e.id,
+                points: rule.points,
+              },
+            })
+            .catch(() => undefined); // ignore duplicates
+        }
+      }
+    }
+  }
+
+  // Pre-existing interventions so the advisor log isn't empty on first load.
+  const interventionTargets = [students[0], students[2], students[4]];
+  for (let i = 0; i < interventionTargets.length; i++) {
+    const target = interventionTargets[i];
+    const advisor = i % 2 === 0 ? advisor1 : advisor2;
+    await prisma.intervention.create({
+      data: {
+        orgId: org.id,
+        advisorUserId: advisor.id,
+        studentUserId: target.id,
+        type: ["CHECK_IN", "EMAIL", "MEETING"][i] as "CHECK_IN" | "EMAIL" | "MEETING",
+        note: `Initial outreach — low engagement observed during opening weeks.`,
+        occurredAt: new Date(now.getTime() - (10 - i) * 24 * 60 * 60 * 1000),
+      },
+    });
+  }
+
+  // Backfill engagement scores so the advisor dashboard shows meaningful data.
+  const { recomputeEngagementForUser } = await import("../lib/engagement/recompute");
+  for (const s of students) {
+    await recomputeEngagementForUser(s.id);
+  }
+
   console.log("Seed complete.");
   console.log(`  Org: ${org.name} (slug: ${org.slug})`);
   console.log(`  Users: 1 admin, 2 advisors, 3 officers, 30 students`);

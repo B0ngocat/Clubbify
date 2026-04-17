@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db/client";
 import { computeScore } from "@/lib/engagement/score";
+import { onBandTransition } from "@/lib/engagement/alerts";
 
 /**
  * Recomputes the engagement score for a single user and upserts it into
@@ -82,6 +83,11 @@ export async function recomputeEngagementForUser(userId: string): Promise<void> 
     trend7d,
   );
 
+  const previous = await prisma.studentEngagementScore.findUnique({
+    where: { userId },
+    select: { band: true },
+  });
+
   await prisma.studentEngagementScore.upsert({
     where: { userId },
     create: {
@@ -99,5 +105,14 @@ export async function recomputeEngagementForUser(userId: string): Promise<void> 
       trend7d,
       computedAt: new Date(),
     },
+  });
+
+  await onBandTransition({
+    orgId: user.orgId,
+    studentUserId: userId,
+    from: previous?.band ?? null,
+    to: finalScore.band,
+    score: finalScore.score,
+    trend7d,
   });
 }
